@@ -1,21 +1,9 @@
-#define _POSIX_C_SOURCE 200809L
-
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 
 #define EVENTS_COUNT 5
-
-#define CHECK(call)                                                      \
-    do {                                                                 \
-        int rc_ = (call);                                                \
-        if (rc_ != 0) {                                                  \
-            fprintf(stderr, "%s failed: %s\n", #call, strerror(rc_));    \
-            exit(EXIT_FAILURE);                                          \
-        }                                                                \
-    } while (0)
 
 typedef struct {
     int id;
@@ -31,7 +19,7 @@ typedef struct {
     Event *data;
 } Monitor;
 
-static Monitor monitor = {
+Monitor monitor = {
     PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_COND_INITIALIZER,
     PTHREAD_COND_INITIALIZER,
@@ -40,34 +28,35 @@ static Monitor monitor = {
     NULL
 };
 
-static void monitor_provide(Monitor *m, Event *ev)
+void monitor_provide(Monitor *m, Event *ev)
 {
-    CHECK(pthread_mutex_lock(&m->mutex));
+    pthread_mutex_lock(&m->mutex);
 
-    while (m->ready)
-        CHECK(pthread_cond_wait(&m->slot_free, &m->mutex));
+    while (m->ready) {
+        pthread_cond_wait(&m->slot_free, &m->mutex);
+    }
 
     m->data = ev;
     m->ready = 1;
 
     printf("[поставщик]  событие #%d отправлено\n", ev->id);
-    fflush(stdout);
 
-    CHECK(pthread_cond_signal(&m->event_ready));
-    CHECK(pthread_mutex_unlock(&m->mutex));
+    pthread_cond_signal(&m->event_ready);
+    pthread_mutex_unlock(&m->mutex);
 }
 
-static Event *monitor_consume(Monitor *m)
+Event *monitor_consume(Monitor *m)
 {
     Event *ev;
 
-    CHECK(pthread_mutex_lock(&m->mutex));
+    pthread_mutex_lock(&m->mutex);
 
-    while (!m->ready && !m->stopping)
-        CHECK(pthread_cond_wait(&m->event_ready, &m->mutex));
+    while (!m->ready && !m->stopping) {
+        pthread_cond_wait(&m->event_ready, &m->mutex);
+    }
 
     if (!m->ready) {
-        CHECK(pthread_mutex_unlock(&m->mutex));
+        pthread_mutex_unlock(&m->mutex);
         return NULL;
     }
 
@@ -76,34 +65,36 @@ static Event *monitor_consume(Monitor *m)
     m->ready = 0;
 
     printf("[потребитель] событие #%d получено: %s\n", ev->id, ev->text);
-    fflush(stdout);
 
-    CHECK(pthread_cond_signal(&m->slot_free));
-    CHECK(pthread_mutex_unlock(&m->mutex));
+    pthread_cond_signal(&m->slot_free);
+    pthread_mutex_unlock(&m->mutex);
 
     return ev;
 }
 
-static void monitor_stop(Monitor *m)
+void monitor_stop(Monitor *m)
 {
-    CHECK(pthread_mutex_lock(&m->mutex));
+    pthread_mutex_lock(&m->mutex);
     m->stopping = 1;
-    CHECK(pthread_cond_broadcast(&m->event_ready));
-    CHECK(pthread_cond_broadcast(&m->slot_free));
-    CHECK(pthread_mutex_unlock(&m->mutex));
+    pthread_cond_broadcast(&m->event_ready);
+    pthread_cond_broadcast(&m->slot_free);
+    pthread_mutex_unlock(&m->mutex);
 }
 
-static void *producer_run(void *arg)
+void *producer_run(void *arg)
 {
     Monitor *m = arg;
+    int i;
 
-    for (int i = 1; i <= EVENTS_COUNT; i++) {
-        sleep(1);
+    for (i = 1; i <= EVENTS_COUNT; i++) {
+        if (i > 1) {
+            sleep(1);
+        }
 
-        Event *ev = malloc(sizeof(*ev));
+        Event *ev = malloc(sizeof(Event));
         if (ev == NULL) {
-            fprintf(stderr, "malloc failed\n");
-            exit(EXIT_FAILURE);
+            printf("Ошибка выделения памяти\n");
+            exit(1);
         }
         ev->id = i;
         snprintf(ev->text, sizeof(ev->text), "данные события %d", i);
@@ -115,13 +106,14 @@ static void *producer_run(void *arg)
     return NULL;
 }
 
-static void *consumer_run(void *arg)
+void *consumer_run(void *arg)
 {
     Monitor *m = arg;
-    Event *ev;
 
-    while ((ev = monitor_consume(m)) != NULL) {
+    Event *ev = monitor_consume(m);
+    while (ev != NULL) {
         free(ev);
+        ev = monitor_consume(m);
     }
     return NULL;
 }
@@ -130,15 +122,15 @@ int main(void)
 {
     pthread_t producer, consumer;
 
-    CHECK(pthread_create(&consumer, NULL, consumer_run, &monitor));
-    CHECK(pthread_create(&producer, NULL, producer_run, &monitor));
+    pthread_create(&consumer, NULL, consumer_run, &monitor);
+    pthread_create(&producer, NULL, producer_run, &monitor);
 
-    CHECK(pthread_join(producer, NULL));
-    CHECK(pthread_join(consumer, NULL));
+    pthread_join(producer, NULL);
+    pthread_join(consumer, NULL);
 
-    CHECK(pthread_cond_destroy(&monitor.event_ready));
-    CHECK(pthread_cond_destroy(&monitor.slot_free));
-    CHECK(pthread_mutex_destroy(&monitor.mutex));
+    pthread_cond_destroy(&monitor.event_ready);
+    pthread_cond_destroy(&monitor.slot_free);
+    pthread_mutex_destroy(&monitor.mutex);
 
     return 0;
 }
